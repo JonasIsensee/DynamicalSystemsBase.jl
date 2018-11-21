@@ -1,5 +1,7 @@
 using DynamicalSystemsBase
 using DynamicalSystemsBase: CDS
+using OrdinaryDiffEq
+import DiffEqBase:step!
 
 struct MinimalTsit5 end
 using StaticArrays
@@ -109,6 +111,42 @@ function step!(integ::MinimalTsit5Integrator{true, T, S}) where {T, S}
 
     return  nothing
 end
+function step!(integ::MinimalTsit5Integrator{false, T, S}) where {T, S}
+
+    c1, c2, c3, c4, c5, c6 = integ.cs;
+    dt = integ.dt; t = integ.t; p = integ.p
+    a21, a31, a32, a41, a42, a43, a51, a52, a53, a54,
+    a61, a62, a63, a64, a65, a71, a72, a73, a74, a75, a76 = integ.as
+
+    @inbounds k1 = integ.ks[1];
+    tmp = integ.tmp; f = integ.f
+
+    integ.uprev = integ.u; uprev = integ.u
+
+    tmp = uprev+dt*a21*k1
+    k2 = f(tmp, p, t+c1*dt)
+    tmp = uprev+dt*(a31*k1+a32*k2)
+    k3 = f(tmp, p, t+c2*dt)
+    tmp = uprev+dt*(a41*k1+a42*k2+a43*k3)
+    k4 = f(tmp, p, t+c3*dt)
+    tmp = uprev+dt*(a51*k1+a52*k2+a53*k3+a54*k4)
+    k5 = f(tmp, p, t+c4*dt)
+    tmp = uprev+dt*(a61*k1+a62*k2+a63*k3+a64*k4+a65*k5)
+    k6 = f(tmp, p, t+dt)
+
+    integ.u = uprev+dt*(a71*k1+a72*k2+a73*k3+a74*k4+a75*k5+a76*k6)
+    k7 = f(integ.u, p, t+dt)
+
+    @inbounds begin # Necessary for interpolation
+        integ.ks[1] = integ.ks[7] = k7
+        integ.ks[2] = k2; integ.ks[3] = k3; integ.ks[4] = k4
+        integ.ks[5] = k5; integ.ks[6] = k6
+    end
+
+    integ.t += dt
+
+    return  nothing
+end
 
 # %%
 ds = Systems.lorenz_iip()
@@ -118,7 +156,7 @@ step!(integ)
 @profiler for i in 1:1000000; step!(integ); end
 #
 # using PyPlot
-# N = 100000
+# N = 10000
 # xs = zeros(N); ys = copy(xs); zs = copy(xs)
 #
 # for i in 1:N
@@ -127,11 +165,19 @@ step!(integ)
 # end
 #
 # plot3D(xs, ys, zs)
+
 using BenchmarkTools
 function bench()
     ds = Systems.lorenz_iip()
     integ = integrator(ds, MinimalTsit5(); dt = 0.01)
     step!(integ)
+    println("In-place time")
+    @btime step!($integ)
+
+    ds = Systems.lorenz()
+    integ = integrator(ds, MinimalTsit5(); dt = 0.01)
+    step!(integ)
+    println("Out of place time")
     @btime step!($integ)
 end
 
