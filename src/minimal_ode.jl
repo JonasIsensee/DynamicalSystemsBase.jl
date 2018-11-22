@@ -1,46 +1,40 @@
-using DynamicalSystemsBase
-using DynamicalSystemsBase: CDS
-using OrdinaryDiffEq
-import DiffEqBase:step!
+using StaticArrays
 
 struct MinimalTsit5 end
-using StaticArrays
-export MinimalTsit5, MinimalTsit5Integrator
 
 mutable struct MinimalTsit5Integrator{IIP, T, S <: AbstractVector{T}, P, F}
-  f::F                  # eom
-  uprev::S              # previous state
-  u::S                  # current state
-  tprev::T              # previous time
-  t::T                  # current time
-  cs::SVector{6, T}     # ci factors cache
-  as::SVector{21, T}    # aij factors cache
-  tmp::S                # dummy
-  p::P                  # parameter container
-  t0::T                 # initial time, only for reinit
-  dt::T                 # step size
-  ks::Vector{S}         # interpolants of the algorithm
+    f::F                  # eom
+    uprev::S              # previous state
+    u::S                  # current state
+    tmp::S                # dummy, same as state
+    tprev::T              # previous time
+    t::T                  # current time
+    t0::T                 # initial time, only for reinit
+    dt::T                 # step size
+    p::P                  # parameter container
+    ks::Vector{S}         # interpolants of the algorithm
+    cs::SVector{6, T}     # ci factors cache
+    as::SVector{21, T}    # aij factors cache
+end
+
+function init(alg::MinimalTsit5, f::F, IIP::Bool, u0::S, t0::T, dt::T, p::P
+    ) where {F, P, T, S<:AbstractArray{T}}
+
+    cs, as = _build_caches(alg, T)
+    ks = [zero(u0) for i in 1:6]
+
+    !IIP && @assert S <: SArray
+
+    integ = MinimalTsit5Integrator{IIP, T, S, P, F}(
+        f, copy(u0), copy(u0), copy(u0), t0, t0, t0, dt, p, ks, cs, as
+    )
 end
 
 const MT5I = MinimalTsit5Integrator
 
-function DynamicalSystemsBase.integrator(ds::CDS{IIP, S, D, F, P}, alg::MinimalTsit5;
-    u0 = ds.u0, t0 = ds.t0, dt = 0.01
-    ) where {IIP, S, D, F, P}
-
-    cs, as = _build_caches(alg, eltype(S))
-    ks = [similar(u0) for i in 1:6]
-
-    u = copy(u0)
-
-    integ = MinimalTsit5Integrator{IIP, eltype(S), S, P, F}(
-        ds.f, u, u, t0, t0, cs, as, u, ds.p, t0, dt, ks
-    )
-end
-
 function _build_caches(::MinimalTsit5, ::Type{T}) where {T}
 
-    cs = SVector{6, T}(0.161 ,0.327 ,0.9 ,0.9800255409045097, 1.0, 1.0)
+    cs = SVector{6, T}(0.161, 0.327, 0.9, 0.9800255409045097, 1.0, 1.0)
 
     as = SVector{21, T}(
     convert(T,0.161),
@@ -90,7 +84,9 @@ function step!(integ::MinimalTsit5Integrator{true, T, S}) where {T, S}
     k1, k2, k3, k4, k5, k6 = integ.ks; k7 = k1
     tmp = integ.tmp; f! = integ.f
 
-    integ.uprev .= integ.u; uprev = integ.u
+    integ.uprev .= integ.u; uprev = integ.uprev
+
+    # @inbounds for i in eachindex(integ.uprev)
 
     @. tmp = uprev+dt*a21*k1
     f!(k2, tmp, p, t+c1*dt)
@@ -149,36 +145,66 @@ function step!(integ::MinimalTsit5Integrator{false, T, S}) where {T, S}
 end
 
 # %%
-ds = Systems.lorenz_iip()
-integ = integrator(ds, MinimalTsit5(); dt = 0.01)
-step!(integ)
-
-@profiler for i in 1:1000000; step!(integ); end
-#
-# using PyPlot
-# N = 10000
-# xs = zeros(N); ys = copy(xs); zs = copy(xs)
-#
-# for i in 1:N
-#     step!(integ)
-#     xs[i], ys[i], zs[i] = integ.u
-# end
-#
-# plot3D(xs, ys, zs)
-
-using BenchmarkTools
-function bench()
-    ds = Systems.lorenz_iip()
-    integ = integrator(ds, MinimalTsit5(); dt = 0.01)
-    step!(integ)
-    println("In-place time")
-    @btime step!($integ)
-
-    ds = Systems.lorenz()
-    integ = integrator(ds, MinimalTsit5(); dt = 0.01)
-    step!(integ)
-    println("Out of place time")
-    @btime step!($integ)
+function loop(u, p, t)
+    @inbounds begin
+        σ = p[1]; ρ = p[2]; β = p[3]
+        du1 = σ*(u[2]-u[1])
+        du2 = u[1]*(ρ-u[3]) - u[2]
+        du3 = u[1]*u[2] - β*u[3]
+        return SVector{3}(du1, du2, du3)
+    end
+end
+function liip(du, u, p, t)
+    σ = p[1]; ρ = p[2]; β = p[3]
+    du[1] = σ*(u[2]-u[1])
+    du[2] = u[1]*(ρ-u[3]) - u[2]
+    du[3] = u[1]*u[2] - β*u[3]
+    return nothing
 end
 
-bench()
+
+u0 = 10ones(3)
+oop = init(MinimalTsit5(), loop, false, SVector{3}(u0), 0.0, 0.01, [10, 28, 8/3])
+step!(oop)
+for i in 1:10000; step!(oop); end
+
+
+iip = init(MinimalTsit5(), liip, true, u0, 0.0, 0.01, [10, 28, 8/3])
+step!(iip)
+
+# @profiler for i in 1:1000000; step!(integ); end
+
+# using PyPlot
+#
+# for integ in (iip, oop)
+#     N = 10000
+#     xs = zeros(N); ys = copy(xs); zs = copy(xs)
+#
+#     for i in 1:N
+#         step!(integ)
+#         xs[i], ys[i], zs[i] = integ.u
+#     end
+#
+#     plot3D(xs, ys, zs)
+# end
+
+
+# using BenchmarkTools
+# function bench()
+#     u0 = 10ones(3)
+#     oop = init(MinimalTsit5(), loop, false, SVector{3}(u0), 0.0, 0.01, [10, 28, 8/3])
+#     step!(oop)
+#
+#     iip = init(MinimalTsit5(), liip, true, u0, 0.0, 0.01, [10, 28, 8/3])
+#     step!(iip)
+#
+#     println("Minimal integrator times")
+#     println("In-place time")
+#     @btime step!($iip)
+#
+#     println("Out of place time")
+#     @btime step!($oop)
+#
+# end
+#
+# bench()
