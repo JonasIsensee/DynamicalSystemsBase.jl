@@ -86,8 +86,6 @@ function step!(integ::MinimalTsit5Integrator{true, T, S}) where {T, S}
 
     integ.uprev .= integ.u; uprev = integ.uprev
 
-    # @inbounds for i in eachindex(integ.uprev)
-
     @. tmp = uprev+dt*a21*k1
     f!(k2, tmp, p, t+c1*dt)
     @. tmp = uprev+dt*(a31*k1+a32*k2)
@@ -162,15 +160,23 @@ function liip(du, u, p, t)
     return nothing
 end
 
+# %%
+begin
+    u0 = 10ones(3)
+    oop = init(MinimalTsit5(), loop, false, SVector{3}(u0), 0.0, 0.0001, [10, 28, 8/3])
+    step!(oop)
+    for i in 1:10000;
+        step!(oop);
+        isnan(oop.u[1]) || isnan(oop.u[2]) || isnan(oop.u[3]) || error("oop nan")
+    end
 
-u0 = 10ones(3)
-oop = init(MinimalTsit5(), loop, false, SVector{3}(u0), 0.0, 0.01, [10, 28, 8/3])
-step!(oop)
-for i in 1:10000; step!(oop); end
-
-
-iip = init(MinimalTsit5(), liip, true, u0, 0.0, 0.01, [10, 28, 8/3])
-step!(iip)
+    iip = init(MinimalTsit5(), liip, true, copy(u0), 0.0, 0.0001, [10, 28, 8/3])
+    step!(iip)
+    for i in 1:10000;
+        step!(iip);
+        isnan(iip.u[1]) || isnan(iip.u[2]) || isnan(iip.u[3]) || error("iip nan")
+    end
+end
 
 # @profiler for i in 1:1000000; step!(integ); end
 
